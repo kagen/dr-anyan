@@ -1,5 +1,6 @@
 package com.example.drmario
 
+import kotlin.math.abs
 import kotlin.random.Random
 
 enum class PillColor(val drawColor: Int) {
@@ -28,6 +29,21 @@ data class ActiveCapsule(
     val groupId: Int
 )
 
+data class ClearEvent(
+    val cells: Set<Pair<Int, Int>>,
+    val chainLevel: Int,
+    val clearedCells: Int,
+    val clearedViruses: Int,
+    val scoreGain: Int
+)
+
+data class TickResult(
+    val clearEvents: List<ClearEvent>,
+    val dropIntervalMs: Long,
+    val level: Int,
+    val gameOver: Boolean
+)
+
 class DrMarioGame(
     val width: Int = 8,
     val height: Int = 16,
@@ -37,6 +53,7 @@ class DrMarioGame(
     private val board: Array<Array<Cell?>> = Array(height) { arrayOfNulls(width) }
     private var nextGroupId = 1
     private var active: ActiveCapsule? = null
+    private val initialVirusCount: Int = initialVirusCount.coerceAtLeast(1)
 
     var score: Int = 0
         private set
@@ -47,9 +64,13 @@ class DrMarioGame(
     var virusesRemaining: Int = 0
         private set
 
+    var level: Int = 1
+        private set
+
     init {
-        spawnViruses(initialVirusCount)
+        spawnViruses(this.initialVirusCount)
         spawnCapsule()
+        updateDifficulty()
     }
 
     fun snapshotBoard(): Array<Array<Cell?>> {
@@ -70,17 +91,32 @@ class DrMarioGame(
         return listOf(capsule.firstColor, capsule.secondColor)
     }
 
-    fun tick() {
-        if (gameOver) return
+    fun currentDropIntervalMs(): Long {
+        val base = 650L
+        val step = 45L
+        val min = 140L
+        return (base - (level - 1) * step).coerceAtLeast(min)
+    }
+
+    fun tick(): TickResult {
+        if (gameOver) return buildTickResult(emptyList())
+
+        val clearEvents = mutableListOf<ClearEvent>()
         val capsule = active ?: run {
             spawnCapsule()
-            return
+            return buildTickResult(emptyList())
         }
+
         if (!moveCapsule(capsule, 0, 1)) {
             lockCapsule(capsule)
-            resolveBoard()
-            spawnCapsule()
+            clearEvents += resolveBoard()
+            if (!gameOver) {
+                spawnCapsule()
+            }
         }
+
+        updateDifficulty()
+        return buildTickResult(clearEvents)
     }
 
     fun moveLeft() {
@@ -114,13 +150,28 @@ class DrMarioGame(
         capsule.orientation = originalOrientation
     }
 
-    fun hardDrop() {
-        if (gameOver) return
-        val capsule = active ?: return
+    fun hardDrop(): TickResult {
+        if (gameOver) return buildTickResult(emptyList())
+        val capsule = active ?: return buildTickResult(emptyList())
+
         while (moveCapsule(capsule, 0, 1)) {
-            // Continue dropping.
+            // Keep dropping until collision.
         }
-        tick()
+        return tick()
+    }
+
+    private fun buildTickResult(clearEvents: List<ClearEvent>): TickResult {
+        return TickResult(
+            clearEvents = clearEvents,
+            dropIntervalMs = currentDropIntervalMs(),
+            level = level,
+            gameOver = gameOver
+        )
+    }
+
+    private fun updateDifficulty() {
+        val clearedViruses = (initialVirusCount - virusesRemaining).coerceAtLeast(0)
+        level = (clearedViruses / 2) + 1
     }
 
     private fun spawnViruses(targetCount: Int) {
@@ -206,19 +257,27 @@ class DrMarioGame(
         active = null
     }
 
-    private fun resolveBoard() {
-        var anyClear: Boolean
-        do {
-            anyClear = clearMatches()
-            if (anyClear) {
-                while (applyGravityStep()) {
-                    // Continue falling until stable.
-                }
+    private fun resolveBoard(): List<ClearEvent> {
+        val clearEvents = mutableListOf<ClearEvent>()
+        var chain = 0
+
+        while (true) {
+            val match = collectMatches()
+            if (match.isEmpty()) break
+
+            chain++
+            val event = applyClear(match, chain)
+            clearEvents += event
+
+            while (applyGravityStep()) {
+                // Continue falling until board is stable.
             }
-        } while (anyClear)
+        }
+
+        return clearEvents
     }
 
-    private fun clearMatches(): Boolean {
+    private fun collectMatches(): Set<Pair<Int, Int>> {
         val toClear = mutableSetOf<Pair<Int, Int>>()
 
         for (y in 0 until height) {
@@ -263,24 +322,41 @@ class DrMarioGame(
             }
         }
 
-        if (toClear.isEmpty()) return false
+        return toClear
+    }
+
+    private fun applyClear(toClear: Set<Pair<Int, Int>>, chainLevel: Int): ClearEvent {
+        var clearedViruses = 0
 
         for ((x, y) in toClear) {
             val cell = board[y][x] ?: continue
             if (cell.kind == CellKind.VIRUS) {
-                virusesRemaining = (virusesRemaining - 1).coerceAtLeast(0)
+                clearedViruses++
             }
-            board[y][x] = null
-            score += 100
         }
 
+        val chainBonus = 1 + ((chainLevel - 1) * 0.5f)
+        val scoreGain = (toClear.size * 100 * chainBonus).toInt()
+
+        for ((x, y) in toClear) {
+            board[y][x] = null
+        }
+
+        virusesRemaining = (virusesRemaining - clearedViruses).coerceAtLeast(0)
+        score += scoreGain
         detachBrokenCapsules()
 
         if (virusesRemaining == 0) {
             gameOver = true
         }
 
-        return true
+        return ClearEvent(
+            cells = toClear,
+            chainLevel = chainLevel,
+            clearedCells = toClear.size,
+            clearedViruses = clearedViruses,
+            scoreGain = scoreGain
+        )
     }
 
     private fun detachBrokenCapsules() {
@@ -302,7 +378,7 @@ class DrMarioGame(
             }
             val (ax, ay) = cells[0]
             val (bx, by) = cells[1]
-            if (kotlin.math.abs(ax - bx) + kotlin.math.abs(ay - by) != 1) {
+            if (abs(ax - bx) + abs(ay - by) != 1) {
                 board[ay][ax]?.groupId = null
                 board[by][bx]?.groupId = null
             }
