@@ -37,8 +37,19 @@ data class ClearEvent(
     val scoreGain: Int
 )
 
+enum class LockCause {
+    NATURAL_FALL,
+    HARD_DROP
+}
+
+data class LockEvent(
+    val cells: List<Pair<Int, Int>>,
+    val cause: LockCause
+)
+
 data class TickResult(
     val clearEvents: List<ClearEvent>,
+    val lockEvent: LockEvent?,
     val dropIntervalMs: Long,
     val level: Int,
     val gameOver: Boolean
@@ -98,16 +109,25 @@ class DrMarioGame(
         return (base - (level - 1) * step).coerceAtLeast(min)
     }
 
-    fun tick(): TickResult {
-        if (gameOver) return buildTickResult(emptyList())
+    fun tick(lockCause: LockCause = LockCause.NATURAL_FALL): TickResult {
+        if (gameOver) return buildTickResult(emptyList(), null)
 
         val clearEvents = mutableListOf<ClearEvent>()
+        var lockEvent: LockEvent? = null
         val capsule = active ?: run {
             spawnCapsule()
-            return buildTickResult(emptyList())
+            return buildTickResult(emptyList(), null)
         }
 
         if (!moveCapsule(capsule, 0, 1)) {
+            val second = secondOffset(capsule.orientation)
+            lockEvent = LockEvent(
+                cells = listOf(
+                    capsule.anchorX to capsule.anchorY,
+                    capsule.anchorX + second.first to capsule.anchorY + second.second
+                ),
+                cause = lockCause
+            )
             lockCapsule(capsule)
             clearEvents += resolveBoard()
             if (!gameOver) {
@@ -116,7 +136,7 @@ class DrMarioGame(
         }
 
         updateDifficulty()
-        return buildTickResult(clearEvents)
+        return buildTickResult(clearEvents, lockEvent)
     }
 
     fun moveLeft() {
@@ -151,18 +171,19 @@ class DrMarioGame(
     }
 
     fun hardDrop(): TickResult {
-        if (gameOver) return buildTickResult(emptyList())
-        val capsule = active ?: return buildTickResult(emptyList())
+        if (gameOver) return buildTickResult(emptyList(), null)
+        val capsule = active ?: return buildTickResult(emptyList(), null)
 
         while (moveCapsule(capsule, 0, 1)) {
             // Keep dropping until collision.
         }
-        return tick()
+        return tick(LockCause.HARD_DROP)
     }
 
-    private fun buildTickResult(clearEvents: List<ClearEvent>): TickResult {
+    private fun buildTickResult(clearEvents: List<ClearEvent>, lockEvent: LockEvent?): TickResult {
         return TickResult(
             clearEvents = clearEvents,
+            lockEvent = lockEvent,
             dropIntervalMs = currentDropIntervalMs(),
             level = level,
             gameOver = gameOver

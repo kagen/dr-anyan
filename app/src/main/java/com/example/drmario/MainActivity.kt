@@ -136,6 +136,10 @@ class MainActivity : AppCompatActivity() {
                     handleTouchGesture(event.x, event.y, event.eventTime - touchDownTime)
                     true
                 }
+                MotionEvent.ACTION_CANCEL -> {
+                    handleTouchGesture(event.x, event.y, event.eventTime - touchDownTime)
+                    true
+                }
                 else -> true
             }
         }
@@ -157,7 +161,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (dy > swipeThresholdPx && absY > absX) {
-            playTone(ToneGenerator.TONE_PROP_BEEP2, 60)
             val result = game.hardDrop()
             handleTickResult(result)
             rescheduleGameLoop(result.dropIntervalMs)
@@ -176,6 +179,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleTickResult(result: TickResult) {
+        result.lockEvent?.let { lockEvent ->
+            val hardDrop = lockEvent.cause == LockCause.HARD_DROP
+            binding.gameView.triggerLockEffect(lockEvent.cells, hardDrop)
+            if (hardDrop) {
+                playTone(ToneGenerator.TONE_PROP_BEEP2, 65)
+            } else {
+                playTone(ToneGenerator.TONE_PROP_ACK, 32)
+            }
+        }
+
         for (event in result.clearEvents) {
             binding.gameView.triggerClearEffect(event.cells, event.chainLevel)
             when {
