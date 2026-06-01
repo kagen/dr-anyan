@@ -1,0 +1,11 @@
+R_DEF: Internal format may change without notice
+local
+id dropButton
+id gameView
+id leftButton
+id rightButton
+id rotateButton
+id statusText
+layout activity_main
+string app_name
+style Theme.DrAndroid
