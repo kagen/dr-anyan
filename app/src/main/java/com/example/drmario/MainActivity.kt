@@ -5,8 +5,15 @@ import android.media.ToneGenerator
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.MotionEvent
+import android.view.ViewConfiguration
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.example.drmario.databinding.ActivityMainBinding
+import kotlin.math.abs
 
 class MainActivity : AppCompatActivity() {
 
@@ -16,6 +23,13 @@ class MainActivity : AppCompatActivity() {
     private var toneGenerator: ToneGenerator? = null
     private var endSoundPlayed = false
     private var bgmStep = 0
+
+    private var touchDownX = 0f
+    private var touchDownY = 0f
+    private var touchDownTime = 0L
+    private var tapSlopPx = 0
+    private var swipeThresholdPx = 0
+    private var tapTimeoutMs = 0
 
     private val bgmPattern = intArrayOf(
         ToneGenerator.TONE_DTMF_5,
@@ -59,31 +73,19 @@ class MainActivity : AppCompatActivity() {
         toneGenerator = ToneGenerator(AudioManager.STREAM_MUSIC, 80)
         binding.gameView.setGame(game)
 
-        binding.leftButton.setOnClickListener {
-            game.moveLeft()
-            playTone(ToneGenerator.TONE_PROP_BEEP, 35)
-            updateUi()
-        }
-        binding.rightButton.setOnClickListener {
-            game.moveRight()
-            playTone(ToneGenerator.TONE_PROP_BEEP, 35)
-            updateUi()
-        }
-        binding.rotateButton.setOnClickListener {
-            game.rotateClockwise()
-            playTone(ToneGenerator.TONE_DTMF_9, 40)
-            updateUi()
-        }
-        binding.dropButton.setOnClickListener {
-            playTone(ToneGenerator.TONE_PROP_BEEP2, 60)
-            val result = game.hardDrop()
-            handleTickResult(result)
-            rescheduleGameLoop(result.dropIntervalMs)
-        }
+        enableFullscreen()
+        setupTouchControls()
 
         updateUi()
         rescheduleGameLoop(game.currentDropIntervalMs())
         handler.postDelayed(bgmLoop, 350L)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            hideSystemBars()
+        }
     }
 
     override fun onDestroy() {
@@ -92,6 +94,85 @@ class MainActivity : AppCompatActivity() {
         handler.removeCallbacks(bgmLoop)
         toneGenerator?.release()
         toneGenerator = null
+    }
+
+    private fun enableFullscreen() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        hideSystemBars()
+
+        val baseLeft = binding.statusText.paddingLeft
+        val baseTop = binding.statusText.paddingTop
+        val baseRight = binding.statusText.paddingRight
+        val baseBottom = binding.statusText.paddingBottom
+        ViewCompat.setOnApplyWindowInsetsListener(binding.statusText) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.setPadding(baseLeft, baseTop + bars.top, baseRight, baseBottom)
+            insets
+        }
+    }
+
+    private fun hideSystemBars() {
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+    }
+
+    private fun setupTouchControls() {
+        val config = ViewConfiguration.get(this)
+        tapSlopPx = config.scaledTouchSlop
+        swipeThresholdPx = config.scaledTouchSlop * 4
+        tapTimeoutMs = ViewConfiguration.getTapTimeout() * 2
+
+        binding.gameView.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    touchDownX = event.x
+                    touchDownY = event.y
+                    touchDownTime = event.eventTime
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    handleTouchGesture(event.x, event.y, event.eventTime - touchDownTime)
+                    true
+                }
+                else -> true
+            }
+        }
+    }
+
+    private fun handleTouchGesture(endX: Float, endY: Float, durationMs: Long) {
+        if (game.gameOver) return
+
+        val dx = endX - touchDownX
+        val dy = endY - touchDownY
+        val absX = abs(dx)
+        val absY = abs(dy)
+
+        if (absX <= tapSlopPx && absY <= tapSlopPx && durationMs <= tapTimeoutMs) {
+            game.rotateClockwise()
+            playTone(ToneGenerator.TONE_DTMF_9, 40)
+            updateUi()
+            return
+        }
+
+        if (dy > swipeThresholdPx && absY > absX) {
+            playTone(ToneGenerator.TONE_PROP_BEEP2, 60)
+            val result = game.hardDrop()
+            handleTickResult(result)
+            rescheduleGameLoop(result.dropIntervalMs)
+            return
+        }
+
+        if (absX > swipeThresholdPx && absX > absY) {
+            if (dx > 0) {
+                game.moveRight()
+            } else {
+                game.moveLeft()
+            }
+            playTone(ToneGenerator.TONE_PROP_BEEP, 35)
+            updateUi()
+        }
     }
 
     private fun handleTickResult(result: TickResult) {

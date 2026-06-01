@@ -1,25 +1,22 @@
-# Dr.アニャン (Dr. Mario-like)
+# Dr Anyan (Dr. Mario-like)
 
-Android向けのDr.マリオ風パズルゲームです。
+An Android Dr. Mario-like puzzle game.
 
-## 機能
-- 8x16盤面
-- 2色カプセルの落下・左右移動・回転
-- 同色4つ以上の縦横連結で消去
-- 消去後の重力落下
-- 連鎖時フラッシュ演出とチェーン表示
-- 効果音（操作・消去・連鎖・クリア/ゲームオーバー）
-- 簡易BGM（ゲーム進行に応じてテンポ変化）
-- 難易度カーブ（レベル上昇で落下速度アップ）
-- ウイルス全消去でクリア
+## Features
+- 8x16 board
+- Falling two-color capsules
+- Clear 4+ same-color cells in rows/columns
+- Gravity after clears
+- Chain flash effect + chain text
+- SFX/BGM and level-based speed scaling
 
-## 操作
-- `←` : 左移動
-- `→` : 右移動
-- `回転` : 時計回り回転
-- `高速落下` : 一気に着地
+## Controls
+- Swipe left: move left
+- Swipe right: move right
+- Tap: rotate clockwise
+- Swipe down: hard drop
 
-## ビルド
+## Build
 ```bash
 ./gradlew assembleDebug
 ```
