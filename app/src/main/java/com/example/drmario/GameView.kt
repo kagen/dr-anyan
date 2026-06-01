@@ -36,13 +36,21 @@ class GameView @JvmOverloads constructor(
         var alpha: Float
     )
 
+    private data class LevelClearBurst(
+        var progress: Float,
+        var alpha: Float
+    )
+
     private var game: DrMarioGame? = null
     private val flashCells = mutableListOf<FlashCell>()
     private val burstCells = mutableListOf<BurstCell>()
     private val lockPulses = mutableListOf<LockPulse>()
+    private val levelClearBursts = mutableListOf<LevelClearBurst>()
     private var chainBanner: String? = null
     private var chainBannerAlpha = 0f
     private var boardFlashAlpha = 0f
+    private var levelClearBanner: String? = null
+    private var levelClearBannerAlpha = 0f
 
     private val boardPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#1C2533") }
     private val framePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -86,9 +94,26 @@ class GameView @JvmOverloads constructor(
         textSize = 54f
         isFakeBoldText = true
     }
+    private val clearPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#FFF59D")
+        textAlign = Paint.Align.CENTER
+        textSize = 62f
+        isFakeBoldText = true
+    }
 
     fun setGame(game: DrMarioGame) {
         this.game = game
+        invalidate()
+    }
+
+    fun triggerLevelClearEffect(stage: Int) {
+        levelClearBursts.clear()
+        repeat(5) {
+            levelClearBursts += LevelClearBurst(progress = it * 0.12f, alpha = 1f)
+        }
+        boardFlashAlpha = max(boardFlashAlpha, 0.55f)
+        levelClearBanner = "LEVEL $stage CLEAR!"
+        levelClearBannerAlpha = 1f
         invalidate()
     }
 
@@ -128,7 +153,7 @@ class GameView @JvmOverloads constructor(
         super.onDraw(canvas)
         val g = game ?: return
 
-        val cellSize = min(width / (g.width + 2f), height / (g.height + 2f))
+        val cellSize = min(width / g.width.toFloat(), height / g.height.toFloat())
         val boardWidth = g.width * cellSize
         val boardHeight = g.height * cellSize
         val left = (width - boardWidth) / 2f
@@ -165,8 +190,10 @@ class GameView @JvmOverloads constructor(
         drawFlashEffects(canvas, left, top, cellSize, g.width, g.height)
         drawBurstEffects(canvas, left, top, cellSize, g.width, g.height)
         drawLockEffects(canvas, left, top, cellSize, g.width, g.height)
+        drawLevelClearEffects(canvas, boardRect)
         drawBoardFlash(canvas, boardRect)
         drawChainBanner(canvas, top)
+        drawLevelClearBanner(canvas, top, boardRect.bottom)
 
         if (advanceEffects()) {
             postInvalidateOnAnimation()
@@ -271,11 +298,35 @@ class GameView @JvmOverloads constructor(
         canvas.drawRoundRect(boardRect, 16f, 16f, boardFlashPaint)
     }
 
+    private fun drawLevelClearEffects(canvas: Canvas, boardRect: RectF) {
+        if (levelClearBursts.isEmpty()) return
+        val cx = boardRect.centerX()
+        val cy = boardRect.centerY()
+        val maxRadius = max(boardRect.width(), boardRect.height()) * 0.75f
+        for (burst in levelClearBursts) {
+            val radius = maxRadius * burst.progress
+            clearPaint.alpha = (burst.alpha * 180).toInt().coerceIn(0, 255)
+            clearPaint.style = Paint.Style.STROKE
+            clearPaint.strokeWidth = 8f
+            canvas.drawCircle(cx, cy, radius, clearPaint)
+        }
+        clearPaint.style = Paint.Style.FILL
+    }
+
     private fun drawChainBanner(canvas: Canvas, boardTop: Float) {
         val text = chainBanner ?: return
         if (chainBannerAlpha <= 0f) return
         chainPaint.alpha = (chainBannerAlpha * 255).toInt().coerceIn(0, 255)
         canvas.drawText(text, width / 2f, boardTop - 18f, chainPaint)
+    }
+
+    private fun drawLevelClearBanner(canvas: Canvas, boardTop: Float, boardBottom: Float) {
+        val text = levelClearBanner ?: return
+        if (levelClearBannerAlpha <= 0f) return
+        clearPaint.alpha = (levelClearBannerAlpha * 255).toInt().coerceIn(0, 255)
+        clearPaint.style = Paint.Style.FILL
+        val centerY = (boardTop + boardBottom) / 2f + clearPaint.textSize * 0.15f
+        canvas.drawText(text, width / 2f, centerY, clearPaint)
     }
 
     private fun advanceEffects(): Boolean {
@@ -325,12 +376,33 @@ class GameView @JvmOverloads constructor(
             }
         }
 
+        val clearIterator = levelClearBursts.iterator()
+        while (clearIterator.hasNext()) {
+            val burst = clearIterator.next()
+            burst.progress += 0.08f
+            burst.alpha -= 0.035f
+            if (burst.alpha <= 0f || burst.progress >= 1.3f) {
+                clearIterator.remove()
+            } else {
+                animating = true
+            }
+        }
+
         if (chainBannerAlpha > 0f) {
             chainBannerAlpha -= 0.045f
             animating = true
             if (chainBannerAlpha <= 0f) {
                 chainBannerAlpha = 0f
                 chainBanner = null
+            }
+        }
+
+        if (levelClearBannerAlpha > 0f) {
+            levelClearBannerAlpha -= 0.022f
+            animating = true
+            if (levelClearBannerAlpha <= 0f) {
+                levelClearBannerAlpha = 0f
+                levelClearBanner = null
             }
         }
 

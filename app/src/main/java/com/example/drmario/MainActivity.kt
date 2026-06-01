@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.MotionEvent
+import android.view.View
 import android.view.ViewConfiguration
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
@@ -24,12 +25,19 @@ class MainActivity : AppCompatActivity() {
     private var endSoundPlayed = false
     private var bgmStep = 0
 
+    private var isPaused = false
+    private var isLevelTransition = false
+    private var pendingLevelAdvance = false
+
+    private var touchActive = false
     private var touchDownX = 0f
     private var touchDownY = 0f
     private var touchDownTime = 0L
     private var tapSlopPx = 0
     private var swipeThresholdPx = 0
     private var tapTimeoutMs = 0
+    private var longPressDirection = 0
+    private var longPressTriggered = false
 
     private val bgmPattern = intArrayOf(
         ToneGenerator.TONE_DTMF_5,
@@ -44,7 +52,7 @@ class MainActivity : AppCompatActivity() {
 
     private val bgmLoop = object : Runnable {
         override fun run() {
-            if (game.gameOver) return
+            if (isPaused || isLevelTransition || game.gameOver) return
             val tone = bgmPattern[bgmStep % bgmPattern.size]
             if (tone >= 0) {
                 playTone(tone, 65)
@@ -57,12 +65,45 @@ class MainActivity : AppCompatActivity() {
 
     private val gameLoop = object : Runnable {
         override fun run() {
+            if (!canTickGame()) return
             val result = game.tick()
             handleTickResult(result)
-            if (!result.gameOver) {
+            if (canTickGame()) {
                 handler.postDelayed(this, result.dropIntervalMs)
             }
         }
+    }
+
+    private val longPressStartRunnable = Runnable {
+        if (!touchActive || !canAcceptInput()) return@Runnable
+        val direction = directionForLongPress(touchDownX)
+        if (direction == 0) return@Runnable
+        longPressDirection = direction
+        longPressTriggered = true
+        performMove(direction)
+        handler.postDelayed(longPressRepeatRunnable, 85L)
+    }
+
+    private val longPressRepeatRunnable = object : Runnable {
+        override fun run() {
+            if (!touchActive || !longPressTriggered || !canAcceptInput()) return
+            performMove(longPressDirection)
+            handler.postDelayed(this, 85L)
+        }
+    }
+
+    private val levelAdvanceRunnable = Runnable {
+        if (game.gameOver) return@Runnable
+        if (isPaused) {
+            pendingLevelAdvance = true
+            return@Runnable
+        }
+        game.startNextLevel()
+        isLevelTransition = false
+        pendingLevelAdvance = false
+        updateUi()
+        rescheduleGameLoop(game.currentDropIntervalMs())
+        handler.postDelayed(bgmLoop, 180L)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -74,6 +115,7 @@ class MainActivity : AppCompatActivity() {
         binding.gameView.setGame(game)
 
         enableFullscreen()
+        setupControlButtons()
         setupTouchControls()
 
         updateUi()
@@ -92,6 +134,9 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         handler.removeCallbacks(gameLoop)
         handler.removeCallbacks(bgmLoop)
+        handler.removeCallbacks(longPressStartRunnable)
+        handler.removeCallbacks(longPressRepeatRunnable)
+        handler.removeCallbacks(levelAdvanceRunnable)
         toneGenerator?.release()
         toneGenerator = null
     }
@@ -100,13 +145,25 @@ class MainActivity : AppCompatActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         hideSystemBars()
 
-        val baseLeft = binding.statusText.paddingLeft
-        val baseTop = binding.statusText.paddingTop
-        val baseRight = binding.statusText.paddingRight
-        val baseBottom = binding.statusText.paddingBottom
-        ViewCompat.setOnApplyWindowInsetsListener(binding.statusText) { view, insets ->
+        val statusBaseLeft = binding.statusText.paddingLeft
+        val statusBaseTop = binding.statusText.paddingTop
+        val statusBaseRight = binding.statusText.paddingRight
+        val statusBaseBottom = binding.statusText.paddingBottom
+
+        ViewCompat.setOnApplyWindowInsetsListener(binding.rootContainer) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            view.setPadding(baseLeft, baseTop + bars.top, baseRight, baseBottom)
+            binding.statusText.setPadding(
+                statusBaseLeft,
+                statusBaseTop + bars.top,
+                statusBaseRight,
+                statusBaseBottom
+            )
+            binding.controlRow.setPadding(
+                binding.controlRow.paddingLeft,
+                4 + bars.top / 3,
+                binding.controlRow.paddingRight,
+                binding.controlRow.paddingBottom
+            )
             insets
         }
     }
@@ -118,6 +175,19 @@ class MainActivity : AppCompatActivity() {
         controller.hide(WindowInsetsCompat.Type.systemBars())
     }
 
+    private fun setupControlButtons() {
+        binding.pauseButton.setOnClickListener {
+            if (isPaused) {
+                resumeGame()
+            } else {
+                pauseGame()
+            }
+        }
+        binding.newGameButton.setOnClickListener {
+            startNewGame()
+        }
+    }
+
     private fun setupTouchControls() {
         val config = ViewConfiguration.get(this)
         tapSlopPx = config.scaledTouchSlop
@@ -127,17 +197,32 @@ class MainActivity : AppCompatActivity() {
         binding.gameView.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    touchActive = true
+                    longPressTriggered = false
                     touchDownX = event.x
                     touchDownY = event.y
                     touchDownTime = event.eventTime
+                    handler.removeCallbacks(longPressStartRunnable)
+                    handler.removeCallbacks(longPressRepeatRunnable)
+                    handler.postDelayed(longPressStartRunnable, 230L)
                     true
                 }
-                MotionEvent.ACTION_UP -> {
-                    handleTouchGesture(event.x, event.y, event.eventTime - touchDownTime)
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.x - touchDownX
+                    val dy = event.y - touchDownY
+                    if (abs(dx) > tapSlopPx || abs(dy) > tapSlopPx) {
+                        handler.removeCallbacks(longPressStartRunnable)
+                    }
                     true
                 }
-                MotionEvent.ACTION_CANCEL -> {
-                    handleTouchGesture(event.x, event.y, event.eventTime - touchDownTime)
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    val duration = event.eventTime - touchDownTime
+                    val wasLongPress = longPressTriggered
+                    stopContinuousMove()
+                    touchActive = false
+                    if (!wasLongPress) {
+                        handleTouchGesture(event.x, event.y, duration)
+                    }
                     true
                 }
                 else -> true
@@ -145,8 +230,36 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun stopContinuousMove() {
+        handler.removeCallbacks(longPressStartRunnable)
+        handler.removeCallbacks(longPressRepeatRunnable)
+        longPressTriggered = false
+        longPressDirection = 0
+    }
+
+    private fun directionForLongPress(x: Float): Int {
+        val w = binding.gameView.width.toFloat()
+        if (w <= 0f) return 0
+        return when {
+            x < w * 0.45f -> -1
+            x > w * 0.55f -> 1
+            else -> 0
+        }
+    }
+
+    private fun performMove(direction: Int) {
+        if (!canAcceptInput()) return
+        if (direction < 0) {
+            game.moveLeft()
+        } else if (direction > 0) {
+            game.moveRight()
+        }
+        playTone(ToneGenerator.TONE_PROP_BEEP, 28)
+        updateUi()
+    }
+
     private fun handleTouchGesture(endX: Float, endY: Float, durationMs: Long) {
-        if (game.gameOver) return
+        if (!canAcceptInput()) return
 
         val dx = endX - touchDownX
         val dy = endY - touchDownY
@@ -163,18 +276,14 @@ class MainActivity : AppCompatActivity() {
         if (dy > swipeThresholdPx && absY > absX) {
             val result = game.hardDrop()
             handleTickResult(result)
-            rescheduleGameLoop(result.dropIntervalMs)
+            if (canTickGame()) {
+                rescheduleGameLoop(result.dropIntervalMs)
+            }
             return
         }
 
         if (absX > swipeThresholdPx && absX > absY) {
-            if (dx > 0) {
-                game.moveRight()
-            } else {
-                game.moveLeft()
-            }
-            playTone(ToneGenerator.TONE_PROP_BEEP, 35)
-            updateUi()
+            performMove(if (dx > 0) 1 else -1)
         }
     }
 
@@ -199,23 +308,84 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        if (result.levelClearedNow) {
+            isLevelTransition = true
+            handler.removeCallbacks(gameLoop)
+            handler.removeCallbacks(bgmLoop)
+            binding.gameView.triggerLevelClearEffect(result.stage)
+            playTone(ToneGenerator.TONE_SUP_RINGTONE, 240)
+            handler.postDelayed({ playTone(ToneGenerator.TONE_SUP_CONFIRM, 220) }, 220L)
+            handler.removeCallbacks(levelAdvanceRunnable)
+            handler.postDelayed(levelAdvanceRunnable, 1700L)
+        }
+
         if (result.gameOver && !endSoundPlayed) {
             endSoundPlayed = true
+            isLevelTransition = false
+            handler.removeCallbacks(levelAdvanceRunnable)
             handler.removeCallbacks(bgmLoop)
-            if (game.virusesRemaining == 0) {
-                playTone(ToneGenerator.TONE_PROP_ACK, 130)
-                handler.postDelayed({ playTone(ToneGenerator.TONE_PROP_BEEP2, 160) }, 150L)
-            } else {
-                playTone(ToneGenerator.TONE_PROP_NACK, 260)
-            }
+            playTone(ToneGenerator.TONE_PROP_NACK, 260)
         }
 
         updateUi()
     }
 
+    private fun pauseGame() {
+        if (isPaused) return
+        isPaused = true
+        stopContinuousMove()
+        handler.removeCallbacks(gameLoop)
+        handler.removeCallbacks(bgmLoop)
+        binding.pauseButton.text = "Resume"
+        updateUi()
+    }
+
+    private fun resumeGame() {
+        if (!isPaused) return
+        isPaused = false
+        binding.pauseButton.text = "Pause"
+
+        if (pendingLevelAdvance) {
+            pendingLevelAdvance = false
+            handler.post(levelAdvanceRunnable)
+        } else if (canTickGame()) {
+            rescheduleGameLoop(game.currentDropIntervalMs())
+            handler.postDelayed(bgmLoop, 180L)
+        }
+        updateUi()
+    }
+
+    private fun startNewGame() {
+        stopContinuousMove()
+        handler.removeCallbacks(gameLoop)
+        handler.removeCallbacks(bgmLoop)
+        handler.removeCallbacks(levelAdvanceRunnable)
+
+        game.newGame()
+        isPaused = false
+        isLevelTransition = false
+        pendingLevelAdvance = false
+        endSoundPlayed = false
+        bgmStep = 0
+        binding.pauseButton.text = "Pause"
+        playTone(ToneGenerator.TONE_PROP_BEEP2, 120)
+
+        updateUi()
+        rescheduleGameLoop(game.currentDropIntervalMs())
+        handler.postDelayed(bgmLoop, 250L)
+    }
+
+    private fun canAcceptInput(): Boolean {
+        return !isPaused && !isLevelTransition && !game.gameOver && !game.isLevelCleared
+    }
+
+    private fun canTickGame(): Boolean {
+        return !isPaused && !isLevelTransition && !game.gameOver && !game.isLevelCleared
+    }
+
     private fun rescheduleGameLoop(delayMs: Long) {
         handler.removeCallbacks(gameLoop)
-        if (!game.gameOver) {
+        if (canTickGame()) {
             handler.postDelayed(gameLoop, delayMs)
         }
     }
@@ -225,12 +395,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateUi() {
-        val status = if (game.virusesRemaining == 0) {
-            "CLEAR! Score: ${game.score}  Lv: ${game.level}"
-        } else if (game.gameOver) {
-            "GAME OVER  Score: ${game.score}  Lv: ${game.level}"
-        } else {
-            "Score: ${game.score}  Viruses: ${game.virusesRemaining}  Lv: ${game.level}"
+        val status = when {
+            game.gameOver -> "GAME OVER  Score: ${game.score}  Lv: ${game.level}  Stage: ${game.stage}"
+            isLevelTransition || game.isLevelCleared -> "LEVEL ${game.stage} CLEAR!  Score: ${game.score}"
+            isPaused -> "PAUSED  Score: ${game.score}  Viruses: ${game.virusesRemaining}  Stage: ${game.stage}"
+            else -> "Score: ${game.score}  Viruses: ${game.virusesRemaining}  Lv: ${game.level}  Stage: ${game.stage}"
         }
         binding.statusText.text = status
         binding.gameView.invalidate()

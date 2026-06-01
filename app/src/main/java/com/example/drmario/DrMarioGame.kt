@@ -52,6 +52,9 @@ data class TickResult(
     val lockEvent: LockEvent?,
     val dropIntervalMs: Long,
     val level: Int,
+    val stage: Int,
+    val levelClearedNow: Boolean,
+    val levelCleared: Boolean,
     val gameOver: Boolean
 )
 
@@ -65,6 +68,7 @@ class DrMarioGame(
     private var nextGroupId = 1
     private var active: ActiveCapsule? = null
     private val initialVirusCount: Int = initialVirusCount.coerceAtLeast(1)
+    private var levelCleared = false
 
     var score: Int = 0
         private set
@@ -78,10 +82,14 @@ class DrMarioGame(
     var level: Int = 1
         private set
 
+    var stage: Int = 1
+        private set
+
+    val isLevelCleared: Boolean
+        get() = levelCleared
+
     init {
-        spawnViruses(this.initialVirusCount)
-        spawnCapsule()
-        updateDifficulty()
+        resetForStage(1, resetScore = true)
     }
 
     fun snapshotBoard(): Array<Array<Cell?>> {
@@ -110,13 +118,13 @@ class DrMarioGame(
     }
 
     fun tick(lockCause: LockCause = LockCause.NATURAL_FALL): TickResult {
-        if (gameOver) return buildTickResult(emptyList(), null)
+        if (gameOver || levelCleared) return buildTickResult(emptyList(), null, false)
 
         val clearEvents = mutableListOf<ClearEvent>()
         var lockEvent: LockEvent? = null
         val capsule = active ?: run {
             spawnCapsule()
-            return buildTickResult(emptyList(), null)
+            return buildTickResult(emptyList(), null, false)
         }
 
         if (!moveCapsule(capsule, 0, 1)) {
@@ -136,7 +144,7 @@ class DrMarioGame(
         }
 
         updateDifficulty()
-        return buildTickResult(clearEvents, lockEvent)
+        return buildTickResult(clearEvents, lockEvent, levelCleared)
     }
 
     fun moveLeft() {
@@ -171,8 +179,8 @@ class DrMarioGame(
     }
 
     fun hardDrop(): TickResult {
-        if (gameOver) return buildTickResult(emptyList(), null)
-        val capsule = active ?: return buildTickResult(emptyList(), null)
+        if (gameOver || levelCleared) return buildTickResult(emptyList(), null, false)
+        val capsule = active ?: return buildTickResult(emptyList(), null, false)
 
         while (moveCapsule(capsule, 0, 1)) {
             // Keep dropping until collision.
@@ -180,18 +188,62 @@ class DrMarioGame(
         return tick(LockCause.HARD_DROP)
     }
 
-    private fun buildTickResult(clearEvents: List<ClearEvent>, lockEvent: LockEvent?): TickResult {
+    fun startNextLevel() {
+        if (!levelCleared || gameOver) return
+        resetForStage(stage + 1, resetScore = false)
+    }
+
+    fun newGame() {
+        resetForStage(1, resetScore = true)
+    }
+
+    private fun resetForStage(targetStage: Int, resetScore: Boolean) {
+        stage = targetStage.coerceAtLeast(1)
+        if (resetScore) {
+            score = 0
+        }
+        gameOver = false
+        levelCleared = false
+        active = null
+        nextGroupId = 1
+        clearBoard()
+        spawnViruses(virusesForStage(stage))
+        spawnCapsule()
+        updateDifficulty()
+    }
+
+    private fun clearBoard() {
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                board[y][x] = null
+            }
+        }
+    }
+
+    private fun virusesForStage(targetStage: Int): Int {
+        return (initialVirusCount + (targetStage - 1) * 2).coerceAtMost((width * height) / 3)
+    }
+
+    private fun buildTickResult(
+        clearEvents: List<ClearEvent>,
+        lockEvent: LockEvent?,
+        levelClearedNow: Boolean
+    ): TickResult {
         return TickResult(
             clearEvents = clearEvents,
             lockEvent = lockEvent,
             dropIntervalMs = currentDropIntervalMs(),
             level = level,
+            stage = stage,
+            levelClearedNow = levelClearedNow,
+            levelCleared = levelCleared,
             gameOver = gameOver
         )
     }
 
     private fun updateDifficulty() {
-        val clearedViruses = (initialVirusCount - virusesRemaining).coerceAtLeast(0)
+        val stageVirusCount = virusesForStage(stage)
+        val clearedViruses = (stageVirusCount - virusesRemaining).coerceAtLeast(0)
         level = (clearedViruses / 2) + 1
     }
 
@@ -313,7 +365,7 @@ class DrMarioGame(
                 while (end < width && board[y][end]?.color == cell.color) {
                     end++
                 }
-                if (end - x >= 4) {
+                if (end - x >= 3) {
                     for (cx in x until end) {
                         toClear += cx to y
                     }
@@ -334,7 +386,7 @@ class DrMarioGame(
                 while (end < height && board[end][x]?.color == cell.color) {
                     end++
                 }
-                if (end - y >= 4) {
+                if (end - y >= 3) {
                     for (cy in y until end) {
                         toClear += x to cy
                     }
@@ -368,7 +420,8 @@ class DrMarioGame(
         detachBrokenCapsules()
 
         if (virusesRemaining == 0) {
-            gameOver = true
+            levelCleared = true
+            active = null
         }
 
         return ClearEvent(
